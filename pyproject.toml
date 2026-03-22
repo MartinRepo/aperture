@@ -1,0 +1,22 @@
+[project]
+name = "aperture"
+version = "0.1.0"
+description = "Personal knowledge base with LLM-powered information pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "discord.py>=2.4.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.scripts]
+aperture = "aperture.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["aperture*"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
