@@ -2,69 +2,82 @@
 
 > Control exactly how much information gets through.
 
-Aperture is a personal knowledge base powered by an LLM pipeline. It collects technical content from Hacker News, Twitter, and WeChat — filters it by relevance to your interests, summarizes it, tags it, and delivers a daily digest straight to Discord. One inbox. No noise.
+Aperture is a **knowledge harness** — a pure MCP server that crawls technical content, provides structured prompts for LLM processing, stores results in a local knowledge base, and exposes search/query tools for AI agents.
+
+It owns **no LLM API keys** and **no messaging bot**. LLM inference and human delivery (Telegram) are handled by an external orchestrator like [OpenClaw](https://github.com/openclaw/openclaw) / [NemoClaw](https://nvidianews.nvidia.com/news/nvidia-announces-nemoclaw). Aperture focuses on what it does best: reliable source crawling, harness prompts, and structured knowledge storage.
 
 ---
 
-## The problem it solves
+## Why this exists
 
-The internet produces more signal than any one person can process. For engineers in fast-moving fields, this creates a real cost: missing an important paper, a breaking API change, or a technique your peers already know. Aperture is built to close that gap — quietly, every day, without becoming another tool you have to maintain.
+The internet produces more signal than any one person can process. For engineers in fast-moving fields, this creates a real cost: missing an important paper, a breaking API change, or a technique your peers already know.
+
+But it's not just humans who need good context — **AI agents do too.** An agent working with stale or hallucinated knowledge makes bad decisions. Aperture is both a personal briefing system and a knowledge harness that ensures agents have correct, up-to-date context to act on.
+
+**No API keys needed.** Most engineers at companies like NVIDIA, Google, or Meta have LLM access through company accounts or internal tooling — not raw API keys. Aperture works with whatever LLM access your orchestrator provides.
 
 ---
 
 ## How it works
 
 ```
-  Sources                 LLM Pipeline              Knowledge Base          Discord
-┌──────────┐           ┌───────────────┐           ┌──────────────┐      ┌──────────────┐
-│ Hacker   │           │  Summarize    │           │  Raw entry   │      │ #daily-digest│
-│   News   │──────────▶│  Tag          │──────────▶│  + metadata  │─────▶│ #feed        │
-│ Twitter  │           │  Score        │           │  Corrections │◀─────│ #ask         │
-│  WeChat  │           └───────────────┘           │  User profile│      │  [buttons]   │
-└──────────┘                                       └──────────────┘      └──────────────┘
+┌─────────────────────────────────────────────┐
+│           OpenClaw / NemoClaw               │
+│                                             │
+│  Your LLM access (any model)               │
+│  Telegram (built-in)                        │
+│  Orchestration: fetch → process → deliver   │
+└──────────────────┬──────────────────────────┘
+                   │ MCP
+                   ▼
+┌─────────────────────────────────────────────┐
+│              Aperture                       │
+│          (pure MCP server)                  │
+│                                             │
+│  Source crawlers    Knowledge base           │
+│  Harness prompts    Search & query          │
+└─────────────────────────────────────────────┘
 ```
 
-Each article passes through three steps:
+The orchestrator calls Aperture's tools in sequence:
 
-1. **Summarize** — Claude extracts a tight 2-3 sentence summary, separating facts from interpretations
-2. **Tag** — multi-label tags with evidence quotes (if Claude can't cite a source sentence, the tag is dropped)
-3. **Score** — a 0–1 relevance score against your personal interest profile
+1. **`fetch_sources`** → crawl HN, get raw articles
+2. **`get_harness_prompt`** → get the processing prompt for each article
+3. Send to LLM (via orchestrator's own access)
+4. **`store_entry`** → save raw content + LLM metadata to knowledge base
+5. Deliver digest via Telegram (orchestrator's native capability)
 
-Only entries above your relevance threshold reach Discord. Everything below is still stored — just silently.
+Claude Code and other agents can also query the knowledge base directly.
 
 ---
 
-## Discord interface
+## MCP tools (8)
 
-Aperture has one human-facing surface: Discord.
+### Source crawling
+| Tool | What it does |
+|---|---|
+| `fetch_sources()` | Crawl HN top stories, return raw entries |
 
-| Channel | When | What |
-|---|---|---|
-| `#daily-digest` | Morning, scheduled | Curated briefing sorted by relevance. One embed per entry, with feedback buttons. |
-| `#feed` | Real-time | High-relevance items pushed immediately as they're processed. |
-| `#ask` | On-demand | Ask anything — "what do I know about KV cache?" — and Aperture queries the knowledge base and synthesizes an answer with source links. |
+### LLM harness
+| Tool | What it does |
+|---|---|
+| `get_harness_prompt(title?, content?)` | Return system + user prompt for LLM processing |
+| `store_entry(url, title, raw_content, ...)` | Save processed entry to knowledge base |
+| `store_feedback(entry_id, action)` | Record human feedback |
 
-Each digest embed looks like this:
-
-```
-🔴  FlashAttention-3 benchmark results on H200
-
-FlashAttention-3 achieves a 2.1x throughput improvement over FA2 on H100/H200
-by exploiting async execution between TMA and WGMMA instructions. The technique
-generalizes to variable-length sequences and FP8 quantization.
-
-Tags:  `flash-attention`  `cuda`  `inference`  `attention`     Relevance: 94%
-
-                              [ Useful ]  [ Not Useful ]  [ Wrong ]
-```
-
-Clicking **Useful** or **Not Useful** takes one tap and updates your relevance model. **Wrong** logs a correction for review — nothing is silently overwritten.
+### Knowledge query
+| Tool | What it does |
+|---|---|
+| `search_knowledge(query)` | Keyword search across titles, summaries, tags |
+| `get_recent_entries(days)` | Latest entries ranked by relevance |
+| `get_entry(entry_id)` | Full details including raw content |
+| `list_tags(days)` | Tag frequency map |
 
 ---
 
-## Knowledge base design
+## Knowledge base
 
-Aperture stores everything in flat JSON files on your local machine — no database, no migration scripts.
+Flat JSON files on your local machine — no database, no migration scripts.
 
 ```
 data/
@@ -73,34 +86,17 @@ data/
 │       ├── 001.json          ← raw content, always preserved
 │       ├── 001.meta.json     ← LLM output, disposable and regenerable
 │       └── ...
-├── corrections/
-│   └── 2026-03-22.jsonl      ← append-only feedback log
-└── user_profile.json         ← interests + learned tag weights
+└── corrections/
+    └── 2026-03-22.jsonl      ← append-only feedback log
 ```
 
 **The raw entry is the source of truth. The LLM output is an index.** If every summary were wrong, you'd re-run the processor. The underlying content is untouched.
-
-There are no directories by topic. Tags are multi-label and evolve as your interests do. "Views" — weekly summaries, topic briefs, cross-article connections — are generated at query time, not stored.
-
----
-
-## Reliability
-
-LLMs make mistakes. Aperture is designed around this fact:
-
-| Where it can go wrong | What Aperture does |
-|---|---|
-| Summary misses the point | Raw content always preserved; one click to the source |
-| Hallucinated claim | Facts and interpretations are labeled separately |
-| Wrong tag | LLM must quote source evidence per tag; unverifiable tags are dropped |
-| Bad synthesis in `#ask` | Every response includes source links for verification |
-| Relevance drift | Feedback buttons retrain the relevance model over time |
 
 ---
 
 ## Setup
 
-**Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv), an Anthropic API key, a Discord bot token.
+**Requirements:** Python 3.11+, [uv](https://github.com/astral-sh/uv)
 
 ```bash
 # 1. Clone and install
@@ -108,30 +104,31 @@ git clone <repo>
 cd channel
 uv venv && uv pip install -e "."
 
-# 2. Configure
+# 2. Configure (optional)
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY, DISCORD_TOKEN, DISCORD_CHANNEL_ID
+# Tune HN_TOP_N, RELEVANCE_THRESHOLD, user_interests in aperture/config.py
 
 # 3. Run
 uv run python -m aperture.main
 ```
 
-**Optional:** tune your interest profile in `aperture/config.py` before the first run:
+### Connecting to OpenClaw / NemoClaw
 
-```python
-user_interests: list[str] = [
-    "deep-learning", "cuda", "inference", "pytorch", "test-infrastructure", ...
-]
-```
+Add Aperture as an MCP server in your OpenClaw config.
 
----
+### Connecting to Claude Code
 
-## Commands
+Add to `~/.claude/settings.json` or project `.mcp.json`:
 
-```bash
-uv run python -m aperture.main          # full pipeline: fetch → process → store → post
-uv run python -m aperture.main fetch    # pipeline only, no Discord (test your API key)
-uv run python -m aperture.main post     # post today's already-processed entries to Discord
+```json
+{
+  "mcpServers": {
+    "aperture": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/aperture", "python", "-m", "aperture.main"]
+    }
+  }
+}
 ```
 
 ---
@@ -142,23 +139,23 @@ uv run python -m aperture.main post     # post today's already-processed entries
 |---|---|
 | Language | Python 3.11+ |
 | Package manager | [uv](https://github.com/astral-sh/uv) |
-| LLM | Claude Haiku (process) via [Anthropic SDK](https://github.com/anthropics/anthropic-sdk-python) |
-| Discord | [discord.py](https://github.com/Rapptz/discord.py) |
+| Protocol | [MCP](https://modelcontextprotocol.io/) via `mcp` Python SDK |
 | HTTP | [httpx](https://github.com/encode/httpx) |
 | Models | [Pydantic](https://docs.pydantic.dev/) v2 |
 | Storage | Local JSON files |
+| Orchestrator | [OpenClaw](https://github.com/openclaw/openclaw) / [NemoClaw](https://nvidianews.nvidia.com/news/nvidia-announces-nemoclaw) (external) |
 
 ---
 
 ## Roadmap
 
-- [x] Phase 1 — HN crawler, LLM pipeline, Discord digest, feedback buttons
-- [ ] Phase 2 — Fact/interpretation split, tag self-verification, `#ask` channel
-- [ ] Phase 3 — Twitter (RSSHub), WeChat share-to-Discord, relevance learning from feedback
-- [ ] Phase 4 — Claude Code Remote Control integration for mobile deep-dives
+- [x] Phase 1 — HN crawler, harness prompts, knowledge base, MCP server (8 tools)
+- [ ] Phase 2 — Fact/interpretation split, tag self-verification, confidence scoring
+- [ ] Phase 3 — Twitter (RSSHub), WeChat share-to-Telegram via OpenClaw
+- [ ] Phase 4 — Semantic search, agent-generated KNOWLEDGE.md, cross-referencing
 
 ---
 
 ## Philosophy
 
-Aperture is deliberately small. It has no web UI, no database, no plugin system. It does one thing: move the right information to you, every day, with minimal friction. Complexity is added only when a real need appears — not in anticipation of one.
+Aperture is deliberately small. It has no web UI, no database, no LLM API keys, no messaging bot. It does one thing: maintain a reliable knowledge base that humans and agents can query. The orchestrator (OpenClaw) handles everything else. Complexity is added only when a real need appears — not in anticipation of one.

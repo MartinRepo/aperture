@@ -1,33 +1,80 @@
-# Aperture — Personal Knowledge Base with LLM-Powered Information Pipeline
+# Aperture — Personal Knowledge Harness
 
 ## Vision
 
-Reduce information asymmetry by automatically collecting, processing, and delivering relevant technical content to a single Discord interface. The system acts as a personal research assistant that learns what you care about over time.
+Reduce information asymmetry by providing a curated, verified knowledge base that both humans and AI agents can consume. Aperture is a **knowledge harness** — it owns the sources, the storage, and the processing rules, but delegates LLM inference and human delivery to an external orchestrator (OpenClaw/NemoClaw).
 
 ## Core Principles
 
 1. **LLM is an index, not the source of truth** — raw content is always preserved; LLM outputs are disposable and regenerable.
-2. **Append-only, never mutate** — entries and corrections are only added, never silently overwritten.
-3. **Don't pre-organize, query on demand** — no rigid folder hierarchy; tags are multi-label and evolve; "views" are generated at read-time.
-4. **Feedback must be effortless** — one-tap buttons on Discord, not forms or text input.
-5. **Start minimal, grow incrementally** — prove the core loop before adding sources or features.
+2. **No API keys** — Aperture provides harness prompts; the orchestrator handles LLM access through whatever the user already has.
+3. **Append-only, never mutate** — entries and corrections are only added, never silently overwritten.
+4. **Don't pre-organize, query on demand** — no rigid folder hierarchy; tags are multi-label and evolve; "views" are generated at read-time.
+5. **Knowledge harness first** — the primary consumers are AI agents; the knowledge base must be correct enough for agents to act on blindly.
 
 ---
 
 ## Architecture Overview
 
 ```
-INPUT LAYER          PROCESSING LAYER         KNOWLEDGE BASE         DISCORD LAYER
-┌──────────┐        ┌──────────────────┐     ┌────────────────┐    ┌──────────────┐
-│  WeChat   │──┐    │ LLM Pipeline     │     │ Layer 1: Raw   │    │ #daily-digest│
-│  HN       │──┼──▶ │ Summarize        │──▶  │ Layer 2: Meta  │──▶ │ #feed        │
-│  Twitter  │──┘    │ Tag + Verify     │     │ Corrections/   │◀── │ #ask         │
-│  (future) │       │ Score relevance  │     │ User profile   │    │ [buttons]    │
-└──────────┘        └──────────────────┘     └────────────────┘    └──────────────┘
-                                                                     ▲        │
-                                                                     │feedback │
-                                                                     └────────┘
+┌─────────────────────────────────────────────────┐
+│              OpenClaw / NemoClaw                 │
+│                                                  │
+│  LLM access (any model the user has)             │
+│  Telegram interface (native)                     │
+│  Orchestration: fetch → process → store → post   │
+└────────────────────┬────────────────────────────┘
+                     │ MCP
+                     ▼
+┌─────────────────────────────────────────────────┐
+│                  Aperture                        │
+│              (pure MCP server)                   │
+│                                                  │
+│  Source crawlers ─── fetch_sources               │
+│  Harness prompts ── get_harness_prompt           │
+│  Storage ────────── store_entry, store_feedback  │
+│  Query ──────────── search_knowledge,            │
+│                     get_recent_entries,           │
+│                     get_entry, list_tags          │
+└─────────────────────────────────────────────────┘
 ```
+
+The orchestrator (OpenClaw) calls Aperture's MCP tools in sequence:
+
+1. `fetch_sources` → get raw articles from HN
+2. `get_harness_prompt(title, content, ...)` → get processing prompt
+3. Send prompt to LLM (via OpenClaw's own LLM access)
+4. `store_entry(raw + LLM output)` → save to knowledge base
+5. Deliver digest via Telegram (OpenClaw's native capability)
+
+Claude Code and other agents can also query the knowledge base directly via `search_knowledge`, `get_recent_entries`, etc.
+
+---
+
+## MCP Tools (8 total)
+
+### Source crawling
+
+| Tool | Description |
+|---|---|
+| `fetch_sources()` | Crawl HN top stories, return raw entries as JSON |
+
+### LLM harness
+
+| Tool | Description |
+|---|---|
+| `get_harness_prompt(title?, content?, ...)` | Return system + user prompt for LLM processing. With no args, returns the template. With args, returns a ready-to-send prompt. |
+| `store_entry(url, title, raw_content, source, llm_summary, tags, relevance_score, ...)` | Save a processed entry (raw + metadata) to the knowledge base |
+| `store_feedback(entry_id, action)` | Record human feedback: useful, not_useful, or wrong |
+
+### Knowledge query
+
+| Tool | Description |
+|---|---|
+| `search_knowledge(query, limit)` | Keyword search across titles, summaries, and tags |
+| `get_recent_entries(days, limit)` | Most recent entries sorted by relevance score |
+| `get_entry(entry_id)` | Full details of a single entry including raw content |
+| `list_tags(days)` | Tag frequency map across the knowledge base |
 
 ---
 
@@ -57,48 +104,22 @@ Stored alongside the entry. Can be regenerated at any time.
 /entries/2026-03-22/001.meta.json
 {
   "llm_summary": "...",
-  "facts": [
-    "PyTorch 2.5 added torch.compile support for custom CUDA kernels",
-    "Performance improvement: 2.3x on A100 for tested workloads"
-  ],
-  "interpretations": [
-    "May affect custom op test coverage in existing test frameworks"
-  ],
-  "tags": ["pytorch", "torch-compile", "cuda-kernels", "performance"],
-  "tag_evidence": {
-    "pytorch": "quoted sentence from source...",
-    "torch-compile": "quoted sentence from source..."
-  },
-  "confidence": 0.87,
+  "tags": ["pytorch", "torch-compile", "cuda-kernels"],
   "relevance_score": 0.92
 }
 ```
 
 ### Layer 3: On-demand views (the intelligence)
 
-No stored files. Generated at query time when a user asks a question in `#ask`. The LLM searches Layer 1+2 by tags and semantic similarity, then synthesizes an answer with source links.
+No stored files. Generated at query time via `search_knowledge` or `get_recent_entries`. The querying agent (or OpenClaw) synthesizes answers from returned entries.
 
 ### Corrections log
 
-Append-only human feedback from Discord button interactions.
+Append-only human feedback from Telegram (via OpenClaw → `store_feedback`).
 
 ```
 /corrections/2026-03-22.jsonl
-{"entry": "001", "action": "not_useful", "timestamp": "..."}
-{"entry": "003", "action": "wrong", "field": "llm_summary", "timestamp": "..."}
-```
-
-### User profile
-
-Interests and learned preferences, updated by feedback loop.
-
-```
-/user_profile.json
-{
-  "interests": ["deep-learning", "cuda", "test-infrastructure", "inference"],
-  "tag_weights": { "kv-cache": 1.4, "frontend-css": 0.1 },
-  "feedback_history_ref": "/corrections/"
-}
+{"entry_id": "2026-03-22/001", "action": "not_useful", "timestamp": "..."}
 ```
 
 ---
@@ -108,100 +129,65 @@ Interests and learned preferences, updated by feedback loop.
 | Risk | Mitigation |
 |---|---|
 | Summary misses key point | Raw content always preserved; summary links to source |
-| Hallucinated claim in summary | Facts extracted with quotes; interpretations labeled separately |
-| Wrong tags | Self-verification: LLM must quote evidence per tag, drop unverifiable tags |
-| Bad query synthesis | Responses include source links; user can click through to verify |
-| Drift over time | User feedback buttons tune relevance; corrections log tracks errors |
-
----
-
-## Discord Interface
-
-### Apertures
-
-| Channel | Trigger | Purpose |
-|---|---|---|
-| `#daily-digest` | Scheduled (morning) | Curated briefing, 5-10 min read, grouped by theme |
-| `#feed` | Real-time | High-relevance items only, pushed immediately |
-| `#ask` | On-demand | User queries the knowledge base ("what do I know about KV cache?") |
-
-### Digest entry format
-
-```
-[DL/Inference] FlashAttention-3 benchmark on H200     🔴 High relevance
-
-Facts:
-• FlashAttention-3 achieves 2.1x speedup on H200 vs H100
-• Supports variable-length sequences natively
-
-Interpretation:
-• May require test matrix update for new attention kernels
-
-Source: https://...
-[Useful] [Not Useful] [Wrong]
-```
-
-### Feedback buttons
-
-- **[Useful]** — positive signal, increases weight of related tags in user profile
-- **[Not Useful]** — negative signal, decreases weight
-- **[Wrong]** — logs a correction, flags entry for review
+| Hallucinated claim | Harness prompt instructs fact extraction; raw content verifiable |
+| Wrong tags | Harness prompt enforces specific technical terms over vague ones |
+| Bad query synthesis | MCP responses include source URLs; agents can verify |
+| Drift over time | Feedback via `store_feedback` tracks errors over time |
+| Agent acts on bad data | All MCP responses include relevance scores and source URLs |
 
 ---
 
 ## Input Sources
 
-### Hacker News
+### Hacker News (implemented)
 - Official API (free, reliable, no auth needed)
-- Poll top/new stories on a schedule
+- Fetched via `fetch_sources` tool
 
-### Twitter
+### Twitter (planned)
 - RSSHub or Nitter instance to avoid API costs
 - Follow specific accounts/lists relevant to DL and systems
 
-### WeChat
-- **Phase 1 approach: share-to-Discord.** User shares articles from WeChat to a Discord channel; the bot picks them up and processes them. One extra tap, 100% reliable.
-- Future: explore RSSHub for WeChat public accounts, or wechaty (with account ban risk caveat)
+### WeChat (planned)
+- Share-to-Telegram flow: user shares article from WeChat to Telegram, OpenClaw picks it up and calls `store_entry`
 
 ---
 
 ## Tech Stack
 
 ```
-Runtime:        Python or Node.js (TBD)
-LLM:            Claude API
-                  - Haiku: tagging, self-verification (cheap, fast)
-                  - Sonnet: summarization, query synthesis
-Discord:        discord.js or discord.py
-Crawlers:       Source-specific (HN API, RSSHub for Twitter)
-Storage:        Local JSON files, git-tracked
-Scheduler:      Cron or in-process scheduler
+Runtime:        Python 3.11+
+Package mgr:    uv
+Protocol:       MCP (via mcp Python SDK)
+HTTP:           httpx (for source crawling)
+Models:         Pydantic v2
+Storage:        Local JSON files
+Orchestrator:   OpenClaw / NemoClaw (external)
+LLM:            Whatever the orchestrator has access to (no API keys in Aperture)
+Telegram:       Handled by OpenClaw (native)
 ```
 
 ---
 
 ## Phased Build Plan
 
-### Phase 1 — Core loop
-- HN crawler
-- LLM processing pipeline (summarize → tag → store)
-- Discord bot with `#daily-digest`
-- `[Useful]` / `[Not Useful]` buttons
-- File-based knowledge base
+### Phase 1 — Core harness (done)
+- HN crawler via `fetch_sources`
+- Harness prompts via `get_harness_prompt`
+- Knowledge base storage via `store_entry`
+- Feedback recording via `store_feedback`
+- Query tools: `search_knowledge`, `get_recent_entries`, `get_entry`, `list_tags`
+- MCP server as sole interface
 
-### Phase 2 — Reliability + query
-- Fact vs interpretation separation in processing
-- Tag self-verification with evidence
-- `#ask` channel with knowledge base query
-- Corrections logging
+### Phase 2 — Reliability + richer prompts
+- Fact vs interpretation separation in harness prompt
+- Tag self-verification with evidence quotes
+- Confidence scoring in metadata
 
-### Phase 3 — More sources + learning
-- Twitter crawler via RSSHub
-- WeChat share-to-Discord flow
-- User profile learning from feedback history
-- `#feed` channel for real-time high-relevance items
+### Phase 3 — More sources
+- Twitter crawler added to `fetch_sources`
+- WeChat share-to-Telegram flow via OpenClaw
 
-### Phase 4 — Remote access
-- Claude Code Remote Control integration
-- Deep-dive queries from phone/tablet via Claude app
-- Cross-reference and synthesis across knowledge base
+### Phase 4 — Advanced harness
+- Semantic search (embeddings) for MCP queries
+- Agent-generated KNOWLEDGE.md context files for projects
+- Cross-reference and synthesis across entries

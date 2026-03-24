@@ -10,7 +10,7 @@ class RawEntry(BaseModel):
     """A single piece of raw content from any source."""
 
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    source: Literal["hackernews", "twitter", "wechat"]
+    source: str
     url: str
     title: str
     raw_content: str
@@ -27,7 +27,7 @@ class EntryMeta(BaseModel):
 
 
 class FeedbackRecord(BaseModel):
-    """A single human feedback action from Discord."""
+    """A single human feedback action from Telegram/OpenClaw."""
 
     entry_id: str  # e.g. "2026-03-22/001"
     action: Literal["useful", "not_useful", "wrong"]
